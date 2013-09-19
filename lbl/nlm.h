@@ -8,6 +8,7 @@
 #include <memory>
 
 #include <Eigen/Dense>
+#include <Eigen/Sparse>
 
 #include "corpus/corpus.h"
 #include "lbl/config.h"
@@ -23,6 +24,8 @@ typedef Eigen::Array<Real, Eigen::Dynamic, 1>               ArrayReal;
 typedef boost::shared_ptr<MatrixReal>                       MatrixRealPtr;
 typedef boost::shared_ptr<VectorReal>                       VectorRealPtr;
 
+typedef Eigen::SparseMatrix<Real> SparseMatrixInt;
+typedef std::vector<WordIds> WordIdMap;
 
 inline VectorReal softMax(const VectorReal& v) {
   Real max = v.maxCoeff();
@@ -382,6 +385,108 @@ private:
   mutable std::unordered_map<std::pair<int,Words>, Real> m_context_class_cache;
   mutable std::unordered_map<Words, Real, container_hash<Words> > m_context_cache;
 };
+
+class AdditiveNLM : public NLM {
+public:
+  AdditiveNLM(const ModelData& config, const Dict& labels, bool diagonal)
+    : NLM(config, labels, diagonal) {}
+
+  AdditiveNLM(const ModelData& config, const Dict& labels, bool diagonal, 
+              const Dict& feat_labels, const WordIdMap& wordmap);
+
+  virtual Real l2_gradient_update(Real sigma) { 
+    W -= W*sigma; 
+    return W.array().square().sum();
+  }
+
+  virtual Real
+  log_prob(const WordId w, const std::vector<WordId>& context bool non_linear=false) const {
+    VectorReal prediction_vector = VectorReal::Zero(config.word_representation_size);
+    int width = config.ngram_order-1;
+    int gap = width-context.size();
+    assert(static_cast<int>(context.size()) <= width);
+    for (int i=gap; i < width; i++)
+      if (m_diagonal) prediction_vector += C.at(i).asDiagonal() * Q.row(context.at(i-gap)).transpose();
+      else            prediction_vector += Q.row(context.at(i-gap)) * C.at(i);
+
+    // a simple non-linearity
+    if (non_linear)
+      prediction_vector = (1.0 + (-prediction_vector).array().exp()).inverse(); // sigmoid
+
+    VectorReal word_probs = logSoftMax((R*prediction_vector).array() + B(w));
+    return word_probs(w);
+  }
+
+  friend class boost::serialization::access;
+  template<class Archive>
+  void save(Archive & ar, const unsigned int version) const {
+    ar << config;
+    ar << m_labels;
+    ar << m_diagonal;
+    ar << boost::serialization::make_array(m_data, m_data_size);
+
+    int unigram_len=unigram.rows();
+    ar << unigram_len;
+    ar << boost::serialization::make_array(unigram.data(), unigram_len);
+
+    // AdditiveNLM
+    ar << m_feat_labels;
+    ar << m_wordmap;
+    ar << m_additive_contexts;
+    ar << m_additive_words;
+  }
+
+  template<class Archive>
+  void load(Archive & ar, const unsigned int version) {
+    ar >> config;
+    ar >> m_labels;
+    ar >> m_diagonal;
+    delete [] m_data;
+    init(config, m_labels, false);
+    ar >> boost::serialization::make_array(m_data, m_data_size);
+
+    int unigram_len=0;
+    ar >> unigram_len;
+    unigram = VectorReal(unigram_len);
+    ar >> boost::serialization::make_array(unigram.data(), unigram_len);
+
+    // AdditiveNLM
+    ar >> m_feat_labels;
+    ar >> m_wordmap;
+    ar >> m_additive_contexts;
+    ar >> m_additive_words;
+    update_additive_representations();
+  }
+  BOOST_SERIALIZATION_SPLIT_MEMBER();
+
+  void update_additive_representations() {
+    if (m_additive_words)
+      Rp = P * R;
+    else
+      Rp = R;
+
+    if (m_additive_contexts)
+      Qp = P * Q;
+    else
+      Qp = Q;
+  }
+
+public:
+  MatrixReal Rp;
+  MatrixReal Qp;
+protected: 
+
+  Dict m_feat_labels;
+  WordIdMap m_wordmap;
+  bool m_additive_contexts;
+  bool m_additive_words;
+  SparseMatrixInt P; 
+  WordIdMap m_wordmap_words;
+  WordIdMap m_wordmap_contexts;
+
+};
+
+
 
 }
 

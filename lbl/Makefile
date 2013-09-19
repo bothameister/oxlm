@@ -1,5 +1,6 @@
 LOCAL_LIBS=${HOME}/packages
-CXXFLAGS = -g -std=c++0x -fPIC -shared -O3 -fopenmp -Wall -I.. -I${LOCAL_LIBS}/include -m64 -I/usr/include/eigen3
+EIGEN=${LOCAL_LIBS}/eigen3
+CXXFLAGS = -g -std=c++0x -fPIC -shared -O3 -fopenmp -Wall -I.. -I${LOCAL_LIBS}/include -m64 -I${EIGEN}
 LDFLAGS = -g -std=c++0x -O3 -fopenmp -L${LOCAL_LIBS}/lib64 -L${LOCAL_LIBS}/lib -lboost_program_options -lboost_serialization -lgfortran
 FFLAGS = -Wall -g -O3  
 CXX=g++
@@ -9,7 +10,7 @@ CXXFLAGS += -DEIGEN_DONT_PARALLELIZE
 
 local_objs = log_bilinear_model.o nlm.o #lbfgs.o # lbfgs_wrapper.o
 
-all: train_sgd train_factored_sgd
+all: train_sgd train_factored_sgd train_factored_add
 
 -include makefile.depend
 
@@ -21,6 +22,9 @@ train_sgd: train_sgd.o $(local_objs)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
 train_factored_sgd: train_factored_sgd.o $(local_objs)
+	$(CXX) -o $@ $^ $(LDFLAGS)
+
+train_factored_add: train_factored_add.o $(local_objs)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
 train_clbl: train_clbl.o $(local_objs)
@@ -47,7 +51,7 @@ cdec_ff_lbl.o: cdec_ff_lbl.cc
 	$(CXX) -shared -fPIC $(CXXFLAGS) -I$(CDEC)/utils -I$(CDEC)/mteval -I$(CDEC)/decoder $< -c
 
 libcdec_ff_lbl.so: cdec_ff_lbl.o nlm.o
-	$(CXX) -shared -L../../cdec/decoder -lcdec -Wl,-soname,$@ -o $@ $^ $(LDFLAGS)
+	$(CXX) -shared -L${CDEC}/decoder -lcdec -Wl,-soname,$@ -o $@ $^ $(LDFLAGS)
 
 .PHONY: depend echo
 depend:
