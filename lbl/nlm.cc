@@ -20,30 +20,20 @@ using namespace oxlm;
 static boost::mt19937 linear_model_rng(static_cast<unsigned> (std::time(0)));
 static uniform_01<> linear_model_uniform_dist;
 
-//NLM::NLM(const NLM& model) 
-//  : config(model.config), R(0,0,0), Q(0,0,0), B(0,0), W(0,0), m_labels(model.label_set()) {
-//    init(config, m_labels, false);
-//    addModel(model);
-//}
-
 NLM::NLM(const ModelData& config, const Dict& labels, bool diagonal)
-  : config(config), R(0,0,0), Q(0,0,0), B(0,0), W(0,0), M(0,0), m_labels(labels), m_diagonal(diagonal) {
-    init(config, m_labels, true);
+  : config(config), R(0,0,0), Q(0,0,0), B(0,0), W(0,0), M(0,0), m_labels(labels), m_data(0), m_diagonal(diagonal) {
+//    init(config, m_labels, true);
   }
 
-void NLM::init(const ModelData& config, const Dict& labels, bool init_weights) {
+void NLM::init(bool init_weights) {
   // the prediction vector ranges over classes for a class based LM, or the vocab otherwise
   int num_output_words = output_types();
-  int num_context_words = context_types();
   int word_width = config.word_representation_size;
   int context_width = config.ngram_order-1;
 
-  int R_size = num_output_words * word_width;
-  int Q_size = num_context_words * word_width;;
+  int R_size = word_elements() * word_width;
+  int Q_size = ctx_elements() * word_width;;
   int C_size = (m_diagonal ? word_width : word_width*word_width);
-  //int C_size;
-  //if (m_diagonal) C_size = word_width;
-  //else            C_size = word_width*word_width;
 
   allocate_data(config);
 
@@ -58,8 +48,8 @@ void NLM::init(const ModelData& config, const Dict& labels, bool init_weights) {
   }
   else W.setZero();
 
-  new (&R) WordVectorsType(m_data, num_output_words, word_width);
-  new (&Q) WordVectorsType(m_data+R_size, num_context_words, word_width);
+  new (&R) WordVectorsType(m_data, word_elements(), word_width);
+  new (&Q) WordVectorsType(m_data+R_size, ctx_elements(), word_width);
 
   C.clear();
   Real* ptr = m_data+R_size+Q_size;
@@ -76,26 +66,12 @@ void NLM::init(const ModelData& config, const Dict& labels, bool init_weights) {
 
   M.setZero();
 
-  //R.setOnes();
-  //R.setZero();
-  //R.setIdentity();
-  //Q.setOnes();
-  //Q.setIdentity();
-  //Q.setZero();
-  //B.setOnes();
-  //    R << 0,0,0,1 , 0,0,1,0 , 0,1,0,0 , 1,0,0,0; 
-  //    R << 0,0 , 0,0 , 0,1 , 1,0; 
-  //    Q << 0,0,0,1 , 0,0,1,0 , 0,1,0,0 , 1,0,0,0; 
-  //    Q << 1,1 , 1,1 , 1,1 , 1,1; 
-
-  //  assert(ptr+num_output_words == m_data+m_data_size); 
-
 #pragma omp master
   if (true) {
     std::cerr << "===============================" << std::endl;
-    std::cerr << " Created a NLM: "   << std::endl;
-    std::cerr << "  Output Vocab size = "          << num_output_words << std::endl;
-    std::cerr << "  Context Vocab size = "         << num_context_words << std::endl;
+    banner();
+    std::cerr << "  Output Vocab size = "          << output_types() << std::endl;
+    std::cerr << "  Context Vocab size = "         << context_types() << std::endl;
     std::cerr << "  Word Vector size = "           << word_width << std::endl;
     std::cerr << "  Context size = "               << context_width << std::endl;
     std::cerr << "  Diagonal = "                   << m_diagonal << std::endl;
@@ -106,12 +82,11 @@ void NLM::init(const ModelData& config, const Dict& labels, bool init_weights) {
 
 void NLM::allocate_data(const ModelData& config) {
   int num_output_words = output_types();
-  int num_context_words = context_types();
   int word_width = config.word_representation_size;
   int context_width = config.ngram_order-1;
 
-  int R_size = num_output_words * word_width;
-  int Q_size = num_context_words * word_width;;
+  int R_size = word_elements() * word_width;
+  int Q_size = ctx_elements() * word_width;;
   int C_size = (m_diagonal ? word_width : word_width*word_width);
   int B_size = num_output_words;
   int M_size = context_width;
@@ -347,3 +322,58 @@ void FactoredOutputNLM::reclass(vector<WordId>& train, vector<WordId>& test) {
 
   m_labels = new_dict;
 }
+
+AdditiveFactoredOutputNLM::AdditiveFactoredOutputNLM(const ModelData& config, const Dict& labels, bool diagonal, 
+              const std::vector<int>& classes,
+              const Dict& feat_labels, const WordIdMap& wordmap,
+              bool additive_contexts, bool additive_words)
+ : FactoredOutputNLM(config, labels, diagonal, classes),
+   Rp(0,0,0), Qp(0,0,0),
+   m_feat_labels(feat_labels), m_wordmap(wordmap), m_additive_contexts(additive_contexts), m_additive_words(additive_words),
+   m_surface_data(0)
+{
+}
+
+void AdditiveFactoredOutputNLM::compile_additive_transformations() {
+  compile_additive_transformation(P_ctx, m_additive_contexts);
+  compile_additive_transformation(P_w, m_additive_words);
+}
+
+void AdditiveFactoredOutputNLM::compile_additive_transformation(SparseMatrixInt& P, bool nontrivial) {
+  if (nontrivial) {
+    typedef Eigen::Triplet<int> Triplet;
+    typedef std::vector<Triplet> Triplets;
+    Triplets t;
+    t.reserve(m_labels.size()*3);//rough estimate
+    P.resize(m_labels.size(), m_feat_labels.size()); 
+    for (WordId w = m_labels.min(); w <= m_labels.max(); ++w) {
+      for (WordId f : m_wordmap.at(w)) {
+        t.push_back(Triplet(w, f, 1));
+      }
+    }
+    P.setFromTriplets(t.begin(), t.end());
+  }
+  else {
+    P.resize(m_labels.size(), m_labels.size()); 
+    P.setIdentity();
+  }
+}
+
+void AdditiveFactoredOutputNLM::init(bool init_weights) {
+  NLM::init(init_weights);
+  int word_width = config.word_representation_size;
+  m_surface_data_size = (output_types() + context_types())* word_width;
+  m_surface_data = new Real[m_surface_data_size];
+  
+  new (&Rp) NLM::WordVectorsType(m_surface_data, output_types(), word_width);
+  new (&Qp) NLM::WordVectorsType(m_surface_data+output_types()*word_width, context_types(), word_width);
+
+  compile_additive_transformations();
+
+  std::cerr << "AdditiveFactoredOutputNLM::init()" << std::endl;
+  std::cerr << "------" << std::endl;
+  std::cerr << "  Output Feature vectors = "          << word_elements() << std::endl;
+  std::cerr << "  Context Feature vectors = "         << ctx_elements() << std::endl;
+  std::cerr << "------" << std::endl;
+}
+

@@ -54,7 +54,7 @@ void cache_data(int start, int end,
                 const vector<size_t>& indices,
                 TrainingInstances &result);
 
-Real sgd_gradient(FactoredOutputNLM& model,
+Real sgd_gradient(AdditiveFactoredOutputNLM& model,
                 const Corpus& training_corpus, 
                 const TrainingInstances &indexes,
                 Real lambda, 
@@ -66,14 +66,14 @@ Real sgd_gradient(FactoredOutputNLM& model,
                 VectorReal & g_FB);
 
 
-Real perplexity(const FactoredOutputNLM& model, const Corpus& test_corpus, int stride=1);
+Real perplexity(const AdditiveFactoredOutputNLM& model, const Corpus& test_corpus, int stride=1);
 void freq_bin_type(const std::string &corpus, int num_classes, std::vector<int>& classes, Dict& dict, VectorReal& class_bias);
 void classes_from_file(const std::string &class_file, vector<int>& classes, Dict& dict, VectorReal& class_bias);
-
+void read_additive_wordmap(const std::string &file, const Dict& dict, Dict& f_dict, WordIdMap& wordmap);
 
 int main(int argc, char **argv) {
-  cout << "Online noise contrastive estimation for log-bilinear models: Copyright 2013 Phil Blunsom, " 
-       << REVISION << '\n' << endl;
+  cout << "SGD training for output factored log-bilinear models with additive representations" << endl
+       << "Copyright 2013 Phil Blunsom, Jan Botha" << endl;
 
   ///////////////////////////////////////////////////////////////////////////////////////
   // Command line processing
@@ -92,10 +92,15 @@ int main(int argc, char **argv) {
         "corpus of sentences, one per line")
     ("test-set", value<string>(), 
         "corpus of test sentences to be evaluated at each iteration")
+    ("wordmap", value<string>(), 
+        "map of surface vocabulary to variable length features (w<tab>feat1 feat2)")
+    ("additive-contexts", "use additive representations for context words")
+    ("additive-words", "use additive representations for output words")
     ("iterations", value<int>()->default_value(10), 
         "number of passes through the data")
     ("minibatch-size", value<int>()->default_value(100), 
-        "number of sentences per minibatch")
+        "number of tokens per minibatch")
+    ("minibatch-info", "Report average vocabulary coverage per minibatch for first iteration")
     ("instances", value<int>()->default_value(std::numeric_limits<int>::max()), 
         "training instances per iteration")
     ("order,n", value<int>()->default_value(3), 
@@ -177,7 +182,7 @@ int main(int argc, char **argv) {
 
 void learn(const variables_map& vm, ModelData& config) {
   Corpus training_corpus, test_corpus;
-  Dict dict;
+  Dict dict;      //surface form dictionary
   dict.Convert("<s>");
   WordId end_id = dict.Convert("</s>");
 
@@ -195,6 +200,9 @@ void learn(const variables_map& vm, ModelData& config) {
     freq_bin_type(vm["input"].as<string>(), vm["classes"].as<int>(), classes, dict, class_bias);
   //////////////////////////////////////////////
 
+  Dict f_dict;    //global feature dictionary
+  WordIdMap wordmap; //maps from surface form id to vector of feature ids 
+  read_additive_wordmap(vm["wordmap"].as<string>().c_str(), dict, f_dict, wordmap);
 
   //////////////////////////////////////////////
   // read the training sentences
@@ -231,9 +239,11 @@ void learn(const variables_map& vm, ModelData& config) {
     test_in.close();
   }
   //////////////////////////////////////////////
-
-  FactoredOutputNLM model(config, dict, vm.count("diagonal-contexts"), classes);
+  
+  AdditiveFactoredOutputNLM model(config, dict, vm.count("diagonal-contexts"), classes,
+                                  f_dict, wordmap, vm.count("additive-contexts"), vm.count("additive-words"));
   model.init(true);
+  model.update_effective_representations();
   model.FB = class_bias;
 
   if (vm.count("model-in")) {
@@ -261,6 +271,9 @@ void learn(const variables_map& vm, ModelData& config) {
   MatrixReal adaGradF = MatrixReal::Zero(model.F.rows(), model.F.cols());
   VectorReal adaGradFB = VectorReal::Zero(model.FB.size());
 
+  Real vocab_coverage=0.0;
+  Real vocab_coverage_z=0.0;
+  VectorReal vocab_ticks = VectorReal::Zero(dict.size());
   #pragma omp parallel shared(global_gradient, global_gradientF)
   {
     //////////////////////////////////////////////
@@ -270,8 +283,8 @@ void learn(const variables_map& vm, ModelData& config) {
     int word_width = model.config.word_representation_size;
     int context_width = model.config.ngram_order-1;
 
-    int R_size = num_words*word_width;
-    int Q_size = R_size;
+    int R_size = model.word_elements() * word_width;
+    int Q_size = model.ctx_elements()  * word_width;
     int C_size = (vm.count("diagonal-contexts") ? word_width : word_width*word_width);
     int B_size = num_words;
     int M_size = context_width;
@@ -281,11 +294,11 @@ void learn(const variables_map& vm, ModelData& config) {
     Real* gradient_data = new Real[model.num_weights()];
     NLM::WeightsType gradient(gradient_data, model.num_weights());
 
-    NLM::WordVectorsType g_R(gradient_data, num_words, word_width);
-    NLM::WordVectorsType g_Q(gradient_data+R_size, num_words, word_width);
+    NLM::WordVectorsType g_R(gradient_data, model.word_elements(), word_width);
+    NLM::WordVectorsType g_Q(gradient_data+R_size, model.ctx_elements(), word_width);
 
     NLM::ContextTransformsType g_C;
-    Real* ptr = gradient_data+2*R_size;
+    Real* ptr = gradient_data+R_size+Q_size;
     for (int i=0; i<context_width; i++) {
       if (vm.count("diagonal-contexts"))
           g_C.push_back(NLM::ContextTransformType(ptr, word_width, 1));
@@ -299,6 +312,40 @@ void learn(const variables_map& vm, ModelData& config) {
     MatrixReal g_F(num_classes, word_width);
     VectorReal g_FB(num_classes);
     //////////////////////////////////////////////
+    // additive code:
+    // g_R and g_Q always point to the underlying gradient_data structure, 
+    // which could range over feature vectors when using additive representations,
+    // but sgd_gradient() expects them to have rows = surface vocab.
+    // To enable additive representations, set up additional structure for surface-only representations
+    // and make g...surface point there instead of to g_R and g_Q. See further down for additional update necessary.
+    NLM::WordVectorsType* g_R_surface = &g_R;
+    NLM::WordVectorsType* g_Q_surface = &g_Q;
+    Real* surface_gradient_data=0;
+    int surface_gradient_data_size=0;
+    NLM::WeightsType surface_gradient(0,0);
+    ptr=0;
+    if (model.is_additive_words()) surface_gradient_data_size += num_words * word_width;
+    if (model.is_additive_contexts()) surface_gradient_data_size += num_words * word_width;
+    if (surface_gradient_data_size>0) { 
+      surface_gradient_data = new Real[surface_gradient_data_size];
+      ptr = surface_gradient_data;
+      new (&surface_gradient) NLM::WeightsType(surface_gradient_data, surface_gradient_data_size);
+    }
+
+    if (model.is_additive_words()) {
+      //std::cerr << "extra space for g_R_surface" << std::endl;
+      assert(ptr);
+      g_R_surface = new NLM::WordVectorsType(ptr, num_words, word_width);
+      ptr += num_words * word_width;
+    } 
+    assert(g_R_surface);
+    if (model.is_additive_contexts()) {
+      //std::cerr << "extra space for g_Q_surface" << std::endl;
+      assert(ptr);
+      g_Q_surface = new NLM::WordVectorsType(ptr, num_words, word_width);
+    } 
+    assert(g_Q_surface);
+    //////////////////////////////
 
     size_t minibatch_counter=0;
     size_t minibatch_size = vm["minibatch-size"].as<int>();
@@ -330,11 +377,60 @@ void learn(const variables_map& vm, ModelData& config) {
         gradient.setZero();
         g_F.setZero();
         g_FB.setZero();
+        if (surface_gradient_data_size > 0) //additive code
+        {
+          //std::cerr << "surface_gradient.setZero" << std::endl;
+          surface_gradient.setZero();
+        }
+
         Real lambda = config.l2_parameter*(end-start)/static_cast<Real>(training_corpus.size()); 
 
         #pragma omp barrier
         cache_data(start, end, training_corpus, training_indices, training_instances);
-        Real f = sgd_gradient(model, training_corpus, training_instances, lambda, g_R, g_Q, g_C, g_B, g_F, g_FB);
+
+        //measure average vocab coverage per minibatch
+        //only first iter and skip last batch
+        if (iteration==0 && vm.count("minibatch-info") && end==start + minibatch_size) {
+          #pragma omp barrier
+          #pragma omp master
+          vocab_ticks.setZero();
+          //aggregate covered sets across threads
+          #pragma omp critical
+          for (auto i : training_instances) {
+            auto w = training_corpus.at(training_indices.at(i));
+            assert(w>=0 && w < vocab_ticks.size() && "Problem with batch vocab coverage detection");
+            vocab_ticks(w)=1;
+          }
+          #pragma omp master
+          { 
+            vocab_coverage += vocab_ticks.array().mean();
+            vocab_coverage_z += 1;
+          }
+        }
+
+        Real f = sgd_gradient(model, training_corpus, training_instances, lambda, *g_R_surface, *g_Q_surface, g_C, g_B, g_F, g_FB);
+
+        //additive code: unroll the surface-only gradients to the additive feature vectors if appropriate
+        if (g_R_surface != &g_R)
+        {
+          g_R += model.P_w.transpose() * (*g_R_surface);
+          //std::cerr << "unroll g_R_surface into g_R: " 
+          // << g_R.rows() << "x" << g_R.cols() << " <- " 
+          // << model.P_w.transpose().rows() << "x" << model.P_w.transpose().cols() << " * "
+          // << g_R_surface->rows() << "x" << g_R_surface->cols() << std::endl;
+        }
+        
+        if (g_Q_surface != &g_Q)
+        {   
+          g_Q += model.P_ctx.transpose() * (*g_Q_surface);
+          //std::cerr << "unroll g_Q_surface into g_Q: "
+          // << g_Q.rows() << "x" << g_Q.cols() << " <- " 
+          // << model.P_ctx.transpose().rows() << "x" << model.P_ctx.transpose().cols() << " * "
+          // << g_Q_surface->rows() << "x" << g_Q_surface->cols() << std::endl;
+          //std::cerr << "g_Q=" << std::endl << g_Q << std::endl
+          //          << "P.transpose=" << std::endl << model.P_ctx.transpose() << std::endl
+          //          << "g_Q_surface=" << std::endl << *g_Q_surface << std::endl;
+        }
 
         #pragma omp critical 
         {
@@ -361,16 +457,25 @@ void learn(const variables_map& vm, ModelData& config) {
           // regularisation
           if (lambda > 0) av_f += (0.5*lambda*model.l2_gradient_update(step_size*lambda));
 
+          // additive code: recompute effective word representations
+          model.update_effective_representations();
+
           if (minibatch_counter % 100 == 0) { cerr << "."; cout.flush(); }
         }
 
         //start += (minibatch_size*omp_get_num_threads());
         start += minibatch_size;
       }
+      if (vm.count("minibatch-info") && iteration==0) {
+        #pragma omp master
+          cerr << " | Avg vocab coverage per minibatch = " << vocab_coverage/vocab_coverage_z
+            << "(" << vocab_coverage << "/" << vocab_coverage_z << ")";
+      }
       #pragma omp master
       cerr << endl;
 
       Real iteration_time = (clock()-iteration_start) / (Real)CLOCKS_PER_SEC;
+      clock_t ppl_start=clock();
       if (vm.count("test-set")) {
         Real local_pp = perplexity(model, test_corpus, 1);
 
@@ -384,7 +489,8 @@ void learn(const variables_map& vm, ModelData& config) {
         pp = exp(-pp/test_corpus.size());
         cerr << " | Time: " << iteration_time << " seconds, Average f = " << av_f/training_corpus.size();
         if (vm.count("test-set")) {
-          cerr << ", Test Perplexity = " << pp; 
+          cerr << ", Test time: " << ((clock()-ppl_start) / (Real)CLOCKS_PER_SEC)
+               << ", Test Perplexity = " << pp; 
         }
         cerr << " |" << endl << endl;
 
@@ -396,6 +502,7 @@ void learn(const variables_map& vm, ModelData& config) {
         }
       }
     }
+    if (surface_gradient_data) { delete [] surface_gradient_data; surface_gradient_data=0; }
   }
 
   if (vm.count("model-out")) {
@@ -423,7 +530,7 @@ void cache_data(int start, int end, const Corpus& training_corpus, const vector<
 }
 
 
-Real sgd_gradient(FactoredOutputNLM& model,
+Real sgd_gradient(AdditiveFactoredOutputNLM& model,
                 const Corpus& training_corpus,
                 const TrainingInstances &training_instances,
                 Real lambda, 
@@ -453,7 +560,7 @@ Real sgd_gradient(FactoredOutputNLM& model,
       int j=context_start+i;
       sentence_start = (sentence_start || j<0 || training_corpus.at(j) == end_id);
       int v_i = (sentence_start ? start_id : training_corpus.at(j));
-      context_vectors.at(i).row(instance) = model.Q.row(v_i);
+      context_vectors.at(i).row(instance) = model.Qp.row(v_i);
     }
   }
   MatrixReal prediction_vectors = MatrixReal::Zero(instances, word_width);
@@ -493,7 +600,7 @@ Real sgd_gradient(FactoredOutputNLM& model,
     VectorReal word_conditional_probs  = word_conditional_log_probs.exp();
 
     weightedRepresentations.row(instance) -= (model.F.row(c) - class_conditional_probs.transpose() * model.F);
-    weightedRepresentations.row(instance) -= (model.R.row(w) - word_conditional_probs.transpose() * model.class_R(c));
+    weightedRepresentations.row(instance) -= (model.Rp.row(w) - word_conditional_probs.transpose() * model.class_R(c));
 
     assert(isfinite(class_conditional_log_probs(c)));
     assert(isfinite(word_conditional_log_probs(w-c_start)));
@@ -544,7 +651,7 @@ Real sgd_gradient(FactoredOutputNLM& model,
   return f;
 }
 
-Real perplexity(const FactoredOutputNLM& model, const Corpus& test_corpus, int stride) {
+Real perplexity(const AdditiveFactoredOutputNLM& model, const Corpus& test_corpus, int stride) {
   Real p=0.0;
 
   int context_width = model.config.ngram_order-1;
@@ -689,3 +796,30 @@ void classes_from_file(const std::string &class_file, vector<int>& classes, Dict
 
   in.close();
 }
+
+void read_additive_wordmap(const std::string &file, const Dict& dict, Dict& f_dict, WordIdMap& wordmap) {
+  // read the feature mapping
+  string line, token, w;
+
+  wordmap.resize(dict.size());
+  wordmap.at(0) = {f_dict.Convert("<s>")};  //match effect of Dict constructor
+  wordmap.at(1) = {f_dict.Convert("</s>")};
+
+  ifstream wordmap_in(file.c_str());
+  while (getline(wordmap_in, line)) {
+    stringstream line_stream(line);
+    line_stream >> w;
+    WordId wi = dict.Lookup(w);
+    assert(dict.valid(wi) && "Wordmap file gives entry for a word not in surface dict as determined by classes");
+    
+    wordmap.at(wi).clear();
+    while (line_stream >> token) 
+      wordmap.at(wi).push_back(f_dict.Convert(token));
+  }
+  for (auto& f : wordmap)
+    assert(f.size()>0 && "Wordmap contains a zero-length vector for some word");
+  assert(wordmap.size() == dict.size());
+
+
+}
+

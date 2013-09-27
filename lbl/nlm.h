@@ -25,6 +25,7 @@ typedef boost::shared_ptr<MatrixReal>                       MatrixRealPtr;
 typedef boost::shared_ptr<VectorReal>                       VectorRealPtr;
 
 typedef Eigen::SparseMatrix<Real> SparseMatrixInt;
+typedef std::vector<WordId> WordIds;
 typedef std::vector<WordIds> WordIdMap;
 
 inline VectorReal softMax(const VectorReal& v) {
@@ -97,9 +98,17 @@ public:
 
   virtual ~NLM() { delete [] m_data; }
 
+  //Must call this manually after construction - relies on derived methods so can't be called from base constructor
+  virtual void init(bool init_weights=false);
+
   //int output_types() const { return config.classes > 0 ? config.classes : m_labels.size(); }
+  //surface dictionary sizes, controls size of of probabilistic space, word bias terms, etc
   int output_types() const { return m_labels.size(); }
   int context_types() const { return m_labels.size(); }
+  
+  //controls size of representation matrices
+  virtual int ctx_elements() const { return m_labels.size(); }
+  virtual int word_elements() const { return m_labels.size(); }
 
   int labels() const { return m_labels.size(); }
   const Dict& label_set() const { return m_labels; }
@@ -141,7 +150,7 @@ public:
     ar >> m_labels;
     ar >> m_diagonal;
     delete [] m_data;
-    init(config, m_labels, false);
+    init(false);
     ar >> boost::serialization::make_array(m_data, m_data_size);
 
     int unigram_len=0;
@@ -177,6 +186,10 @@ public:
       if (m_diagonal) prediction_vector += C.at(i).asDiagonal() * Q.row(context.at(i-gap)).transpose();
       else            prediction_vector += Q.row(context.at(i-gap)) * C.at(i);
 
+    // a simple non-linearity
+    if (config.nonlinear)
+      prediction_vector = (1.0 + (-prediction_vector).array().exp()).inverse(); // sigmoid
+
     VectorReal word_probs = logSoftMax((R*prediction_vector).array() + B(w));
     return word_probs(w);
   }
@@ -208,9 +221,8 @@ public:
 protected:
 //  NLM() : R(0,0,0), Q(0,0,0), B(0,0), W(0,0), M(0,0) {}
 
-  virtual void init(const ModelData& config, const Dict& labels, bool init_weights=false);
-  virtual void allocate_data(const ModelData& config);
-
+  void allocate_data(const ModelData& config);
+  virtual void banner() const { std::cerr << " Created a NLM: "   << std::endl; }
   Dict m_labels;
   int m_data_size;
   Real* m_data;
@@ -229,12 +241,12 @@ public:
   FactoredOutputNLM(const ModelData& config, const Dict& labels, bool diagonal, 
                                  const std::vector<int>& classes);
 
-  Eigen::Block<WordVectorsType> class_R(const int c) {
+  virtual Eigen::Block<WordVectorsType> class_R(const int c) {
     int c_start = indexes.at(c), c_end = indexes.at(c+1);
     return R.block(c_start, 0, c_end-c_start, R.cols());
   }
 
-  const Eigen::Block<const WordVectorsType> class_R(const int c) const {
+  virtual const Eigen::Block<const WordVectorsType> class_R(const int c) const {
     int c_start = indexes.at(c), c_end = indexes.at(c+1);
     return R.block(c_start, 0, c_end-c_start, R.cols());
   }
@@ -264,36 +276,13 @@ public:
   void reclass(std::vector<WordId>& train, std::vector<WordId>& test);
 
   virtual Real
-  log_prob(const WordId w, const std::vector<WordId>& context, bool non_linear=false, bool cache=false) const {
+  log_prob(const WordId w, const std::vector<WordId>& context, bool cache=false) const {
     VectorReal prediction_vector = VectorReal::Zero(config.word_representation_size);
-    int width = config.ngram_order-1;
-    int gap = width-context.size();
-    assert(static_cast<int>(context.size()) <= width);
-    for (int i=gap; i < width; i++)
-      if (m_diagonal) prediction_vector += C.at(i).asDiagonal() * Q.row(context.at(i-gap)).transpose();
-      else            prediction_vector += Q.row(context.at(i-gap)) * C.at(i);
+    get_prediction_vector(context, prediction_vector);
 
     int c = get_class(w);
-
-    // a simple non-linearity
-    if (non_linear)
-      prediction_vector = (1.0 + (-prediction_vector).array().exp()).inverse(); // sigmoid
-
     // log p(c | context) 
-    Real class_log_prob = 0;
-    std::pair<std::unordered_map<Words, Real, container_hash<Words> >::iterator, bool> context_cache_result;
-    if (cache) context_cache_result = m_context_cache.insert(make_pair(context,0));
-    if (cache && !context_cache_result.second) {
-      assert (context_cache_result.first->second != 0);
-      class_log_prob = F.row(c)*prediction_vector + FB(c) - context_cache_result.first->second;
-    }
-    else {
-      Real c_log_z=0;
-      VectorReal class_probs = logSoftMax(F*prediction_vector + FB, &c_log_z);
-      assert(c_log_z != 0);
-      class_log_prob = class_probs(c);
-      if (cache) context_cache_result.first->second = c_log_z;
-    }
+    Real class_log_prob = get_class_log_prob(c, context, prediction_vector, cache);
 
     // log p(w | c, context) 
     Real word_log_prob = 0;
@@ -351,7 +340,7 @@ public:
     ar >> m_labels;
     ar >> m_diagonal;
     delete [] m_data;
-    init(config, m_labels, false);
+    init(false);
     ar >> boost::serialization::make_array(m_data, m_data_size);
 
     int unigram_len=0;
@@ -375,33 +364,8 @@ public:
   }
   BOOST_SERIALIZATION_SPLIT_MEMBER();
 
-public:
-  std::vector<int> word_to_class;
-  std::vector<int> indexes;
-  MatrixReal F;
-  VectorReal FB;
-
-private:
-  mutable std::unordered_map<std::pair<int,Words>, Real> m_context_class_cache;
-  mutable std::unordered_map<Words, Real, container_hash<Words> > m_context_cache;
-};
-
-class AdditiveNLM : public NLM {
-public:
-  AdditiveNLM(const ModelData& config, const Dict& labels, bool diagonal)
-    : NLM(config, labels, diagonal) {}
-
-  AdditiveNLM(const ModelData& config, const Dict& labels, bool diagonal, 
-              const Dict& feat_labels, const WordIdMap& wordmap);
-
-  virtual Real l2_gradient_update(Real sigma) { 
-    W -= W*sigma; 
-    return W.array().square().sum();
-  }
-
-  virtual Real
-  log_prob(const WordId w, const std::vector<WordId>& context bool non_linear=false) const {
-    VectorReal prediction_vector = VectorReal::Zero(config.word_representation_size);
+protected:
+  virtual void get_prediction_vector(const std::vector<WordId>& context, VectorReal& prediction_vector) const {
     int width = config.ngram_order-1;
     int gap = width-context.size();
     assert(static_cast<int>(context.size()) <= width);
@@ -410,30 +374,134 @@ public:
       else            prediction_vector += Q.row(context.at(i-gap)) * C.at(i);
 
     // a simple non-linearity
-    if (non_linear)
+    if (config.nonlinear)
       prediction_vector = (1.0 + (-prediction_vector).array().exp()).inverse(); // sigmoid
-
-    VectorReal word_probs = logSoftMax((R*prediction_vector).array() + B(w));
-    return word_probs(w);
   }
 
+  Real get_class_log_prob(WordId c, const std::vector<WordId>& context, const VectorReal& prediction_vector, bool cache=false) const
+  {
+    // log p(c | context) 
+    Real class_log_prob = 0;
+    std::pair<std::unordered_map<Words, Real, container_hash<Words> >::iterator, bool> context_cache_result;
+    if (cache) context_cache_result = m_context_cache.insert(make_pair(context,0));
+    if (cache && !context_cache_result.second) {
+      assert (context_cache_result.first->second != 0);
+      class_log_prob = F.row(c)*prediction_vector + FB(c) - context_cache_result.first->second;
+    }
+    else {
+      Real c_log_z=0;
+      VectorReal class_probs = logSoftMax(F*prediction_vector + FB, &c_log_z);
+      assert(c_log_z != 0);
+      class_log_prob = class_probs(c);
+      if (cache) context_cache_result.first->second = c_log_z;
+    }
+    return class_log_prob;
+  }
+
+  virtual void banner() const { std::cerr << " Created a FactoredOutputNLM: "   << std::endl; }
+public:
+  std::vector<int> word_to_class;
+  std::vector<int> indexes;
+  MatrixReal F;
+  VectorReal FB;
+
+protected:
+  mutable std::unordered_map<std::pair<int,Words>, Real> m_context_class_cache;
+  mutable std::unordered_map<Words, Real, container_hash<Words> > m_context_cache;
+};
+
+// Additive Representations model
+// Implementation logic is that R and Q will now range over the feature vocabularies (m_data correspondingly).
+// When querying model with surface word indices, use the effective surface representations Rp and Qp.
+class AdditiveFactoredOutputNLM : public FactoredOutputNLM {
+public:
+  AdditiveFactoredOutputNLM(const ModelData& config, const Dict& labels, bool diagonal)
+    : FactoredOutputNLM(config, labels, diagonal), Rp(0,0,0), Qp(0,0,0), m_surface_data(0) {} 
+
+  AdditiveFactoredOutputNLM(const ModelData& config, const Dict& labels, bool diagonal, 
+              const std::vector<int>& classes,
+              const Dict& feat_labels, const WordIdMap& wordmap,
+              bool additive_contexts=false, bool additive_words=false);
+
+  virtual ~AdditiveFactoredOutputNLM() { delete [] m_surface_data; }
+
+  //Must call this manually after construction - relies on derived methods so can't be called from base constructor
+  virtual void init(bool init_weights=false);
+
+  virtual Eigen::Block<WordVectorsType> class_R(const int c) {
+    //std::cerr << "AdditiveFactoredOutputNLM::class_R" << std::endl;
+    int c_start = indexes.at(c), c_end = indexes.at(c+1);
+    return Rp.block(c_start, 0, c_end-c_start, Rp.cols());
+  }
+
+  virtual const Eigen::Block<const WordVectorsType> class_R(const int c) const {
+    //std::cerr << "AdditiveFactoredOutputNLM::class_R" << std::endl;
+    int c_start = indexes.at(c), c_end = indexes.at(c+1);
+    return Rp.block(c_start, 0, c_end-c_start, Rp.cols());
+  }
+
+  virtual Real
+  log_prob(const WordId w, const std::vector<WordId>& context, bool cache=false) const {
+    //std::cerr << "AdditiveFactoredOutputNLM::log_prob" << std::endl;
+    VectorReal prediction_vector = VectorReal::Zero(config.word_representation_size);
+    get_prediction_vector(context, prediction_vector);
+
+    int c = get_class(w);
+    // log p(c | context) 
+    Real class_log_prob = get_class_log_prob(c, context, prediction_vector, cache);
+
+    // log p(w | c, context) 
+    Real word_log_prob = 0;
+    std::pair<std::unordered_map<std::pair<int,Words>, Real>::iterator, bool> class_context_cache_result;
+    if (cache) class_context_cache_result = m_context_class_cache.insert(make_pair(make_pair(c,context),0));
+    if (cache && !class_context_cache_result.second) {
+      word_log_prob  = Rp.row(w)*prediction_vector + B(w) - class_context_cache_result.first->second;
+    }
+    else {
+      int c_start = indexes.at(c);
+      Real w_log_z=0;
+      VectorReal word_probs = logSoftMax(class_R(c)*prediction_vector + class_B(c), &w_log_z);
+      word_log_prob = word_probs(w-c_start);
+      if (cache) class_context_cache_result.first->second = w_log_z;
+    }
+
+    return class_log_prob + word_log_prob;
+  }
+
+  // deliberately reimplement these here instead of calling base
+  // to make sure init() is only called after loading all members
+  // (because init indirectly relies on derived methods ctx_elements(), word_elements())
   friend class boost::serialization::access;
   template<class Archive>
   void save(Archive & ar, const unsigned int version) const {
     ar << config;
     ar << m_labels;
     ar << m_diagonal;
-    ar << boost::serialization::make_array(m_data, m_data_size);
 
     int unigram_len=unigram.rows();
     ar << unigram_len;
     ar << boost::serialization::make_array(unigram.data(), unigram_len);
 
-    // AdditiveNLM
+    // FactoredOutputNLM
+    ar << word_to_class;
+    ar << indexes;
+
+    int F_rows=F.rows(), F_cols=F.cols();
+    ar << F_rows << F_cols;
+    ar << boost::serialization::make_array(F.data(), F_rows*F_cols);
+
+    int FB_len=FB.rows();
+    ar << FB_len;
+    ar << boost::serialization::make_array(FB.data(), FB_len);
+
+    // AdditiveFactoredOutputNLM
     ar << m_feat_labels;
     ar << m_wordmap;
     ar << m_additive_contexts;
     ar << m_additive_words;
+
+    // main data array
+    ar << boost::serialization::make_array(m_data, m_data_size);
   }
 
   template<class Archive>
@@ -441,49 +509,95 @@ public:
     ar >> config;
     ar >> m_labels;
     ar >> m_diagonal;
-    delete [] m_data;
-    init(config, m_labels, false);
-    ar >> boost::serialization::make_array(m_data, m_data_size);
 
     int unigram_len=0;
     ar >> unigram_len;
     unigram = VectorReal(unigram_len);
     ar >> boost::serialization::make_array(unigram.data(), unigram_len);
 
-    // AdditiveNLM
+    // FactoredOutputNLM
+    ar >> word_to_class;
+    ar >> indexes;
+
+    int F_rows=0, F_cols=0;
+    ar >> F_rows >> F_cols;
+    F = MatrixReal(F_rows, F_cols);
+    ar >> boost::serialization::make_array(F.data(), F_rows*F_cols);
+
+    int FB_len=0;
+    ar >> FB_len;
+    FB = VectorReal(FB_len);
+    ar >> boost::serialization::make_array(FB.data(), FB_len);
+
+    // AdditiveFactoredOutputNLM
     ar >> m_feat_labels;
     ar >> m_wordmap;
     ar >> m_additive_contexts;
     ar >> m_additive_words;
-    update_additive_representations();
+
+    // main data array
+    delete [] m_data;
+    delete [] m_surface_data;
+    init(false); 
+    ar >> boost::serialization::make_array(m_data, m_data_size);
+
+    update_effective_representations();
   }
   BOOST_SERIALIZATION_SPLIT_MEMBER();
 
-  void update_additive_representations() {
-    if (m_additive_words)
-      Rp = P * R;
-    else
-      Rp = R;
-
-    if (m_additive_contexts)
-      Qp = P * Q;
-    else
-      Qp = Q;
+  void update_effective_representations() {
+    //std::cerr << "AdditiveFactoredOutputNLM::update_effective_representations()" << std::endl;
+    Rp = P_w * R;
+    Qp = P_ctx * Q;
+    //std::cerr << "Qp=" << std::endl << Qp << std::endl << std::endl;
+    //std::cerr << "P_ctx=" << std::endl << P_ctx << std::endl << std::endl;
+    //std::cerr << "Q=" << std::endl << Q << std::endl << std::endl;
   }
 
-public:
-  MatrixReal Rp;
-  MatrixReal Qp;
-protected: 
+  bool is_additive_words() const { return m_additive_words; }
+  bool is_additive_contexts() const { return m_additive_contexts; }
 
+  virtual int ctx_elements() const { return m_additive_contexts ? m_feat_labels.size() : context_types(); }
+  virtual int word_elements() const { return m_additive_words ? m_feat_labels.size() : output_types(); }
+
+protected:
+  virtual void get_prediction_vector(const std::vector<WordId>& context, VectorReal& prediction_vector) const {
+    //std::cerr << "AdditiveFactoredOutputNLM::get_prediction_vector" << std::endl;
+    int width = config.ngram_order-1;
+    int gap = width-context.size();
+    assert(static_cast<int>(context.size()) <= width);
+    for (int i=gap; i < width; i++)
+      if (m_diagonal) prediction_vector += C.at(i).asDiagonal() * Qp.row(context.at(i-gap)).transpose();
+      else            prediction_vector += Qp.row(context.at(i-gap)) * C.at(i);
+
+    // a simple non-linearity
+    if (config.nonlinear)
+      prediction_vector = (1.0 + (-prediction_vector).array().exp()).inverse(); // sigmoid
+  }
+
+  virtual void banner() const { std::cerr << " Created a AdditiveFactoredOutputNLM: "   << std::endl; }
+private:
+  //computes feature mapping matrix P s.t. multiplication on the left gives additive representations:
+  //R_effective = P*R
+  void compile_additive_transformations();
+  void compile_additive_transformation(SparseMatrixInt& P, bool nontrivial);
+
+
+public:
+  NLM::WordVectorsType Rp; //effective representations, ranges only over {output,context}_types()
+  NLM::WordVectorsType Qp;
+  SparseMatrixInt P_ctx; 
+  SparseMatrixInt P_w; 
+
+protected: 
   Dict m_feat_labels;
   WordIdMap m_wordmap;
   bool m_additive_contexts;
   bool m_additive_words;
-  SparseMatrixInt P; 
-  WordIdMap m_wordmap_words;
-  WordIdMap m_wordmap_contexts;
 
+private:
+  Real* m_surface_data;
+  int m_surface_data_size;
 };
 
 
