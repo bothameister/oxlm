@@ -1,6 +1,7 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/random.hpp>
+#include <boost/archive/text_iarchive.hpp>
 
 #include <math.h>
 #include <iostream>
@@ -95,6 +96,43 @@ void NLM::allocate_data(const ModelData& config) {
   m_data = new Real[m_data_size];
 }
 
+bool NLM::write_embeddings(const std::string& fn) const {
+  std::ofstream f(fn.c_str());
+  if (!f.good()) return false;
+  for (WordId w=0; w < (int)m_labels.size(); ++w) {
+    f << m_labels.Convert(w);
+    for (int i=0; i<config.word_representation_size; ++i)
+      f << " " << R(w,i);
+    f << endl;
+  }
+  return true;
+}
+
+bool AdditiveFactoredOutputNLM::write_embeddings(const std::string& fn) const {
+  {
+  std::ofstream f(fn.c_str());
+  if (!f.good()) return false;
+  for (WordId w=0; w < (int)m_labels.size(); ++w) {
+    f << m_labels.Convert(w);
+    for (int i=0; i<config.word_representation_size; ++i)
+      f << " " << Rp(w,i);
+    f << endl;
+  }
+  }
+
+  if (m_additive_words) {
+    string fn2 = fn + ".factors";
+    std::ofstream f(fn2.c_str());
+    if (!f.good()) return false;
+    for (WordId w=0; w < (int)m_feat_labels.size(); ++w) {
+      f << m_feat_labels.Convert(w);
+      for (int i=0; i<config.word_representation_size; ++i)
+        f << " " << R(w,i);
+      f << endl;
+    }
+  }
+  return true;
+}
 
 void NLMApproximateZ::train(const MatrixReal& contexts, const VectorReal& zs, 
                             Real step_size, int iterations, int approx_vectors) {
@@ -262,66 +300,6 @@ FactoredOutputNLM::FactoredOutputNLM(const ModelData& config,
     }
   }
 
-void FactoredOutputNLM::reclass(vector<WordId>& train, vector<WordId>& test) {
-  cerr << "\n Reallocating classes:" << endl;
-  MatrixReal class_dot_products = R * F.transpose();
-  VectorReal magnitudes = F.rowwise().norm().transpose();
-  vector< vector<int> > new_classes(F.rows());
-
-  cerr << magnitudes << endl;
-  cerr << magnitudes.rows() << " " << magnitudes.cols() << endl;
-  cerr << class_dot_products.rows() << " " << class_dot_products.cols() << endl;
-
-
-  for (int w_id=0; w_id < R.rows(); ++w_id) {
-    int new_class=0;
-    (class_dot_products.row(w_id).array() / magnitudes.transpose().array()).maxCoeff(&new_class);
-    new_classes.at(new_class).push_back(w_id);
-  }
-
-  Dict new_dict;
-  std::vector<int> new_word_to_class(word_to_class.size());
-  std::vector<int> new_indexes(indexes.size());
-  new_indexes.at(0) = 0;
-  new_indexes.at(1) = 2;
-
-  MatrixReal old_R=R, old_Q=Q;
-  int moved_words=0;
-  for (int c_id=0; c_id < int(new_classes.size()); ++c_id) {
-    cerr << "  " << c_id << ": " << new_classes.at(c_id).size() << " word types, ending at ";
-    for (auto w_id : new_classes.at(c_id)) {
-      // re-index the word in the new dict
-      string w_s = label_str(w_id);
-      WordId new_w_id = new_dict.Convert(w_s);
-
-      // reposition the word's representation vectors
-      R.row(new_w_id) = old_R.row(w_id);
-      Q.row(new_w_id) = old_Q.row(w_id);
-
-      if (w_s != "</s>") {
-        new_indexes.at(c_id+1) = new_w_id+1;
-        new_word_to_class.at(new_w_id) = c_id;
-      }
-      else
-        new_word_to_class.at(new_w_id) = 0;
-
-      if (get_class(w_id) != c_id)
-        ++moved_words;
-    }
-    cerr << new_indexes.at(c_id+1) << endl;
-  }
-  cerr << "\n " << moved_words << " word types moved class." << endl;
-
-  swap(word_to_class, new_word_to_class);
-  swap(indexes, new_indexes);
-
-  for (WordId& w_id : train)
-    w_id = new_dict.Lookup(label_str(w_id));
-  for (WordId& w_id : test)
-    w_id = new_dict.Lookup(label_str(w_id));
-
-  m_labels = new_dict;
-}
 
 AdditiveFactoredOutputNLM::AdditiveFactoredOutputNLM(const ModelData& config, const Dict& labels, bool diagonal, 
               const std::vector<int>& classes,
@@ -375,5 +353,35 @@ void AdditiveFactoredOutputNLM::init(bool init_weights) {
   std::cerr << "  Output Feature vectors = "          << word_elements() << std::endl;
   std::cerr << "  Context Feature vectors = "         << ctx_elements() << std::endl;
   std::cerr << "------" << std::endl;
+}
+
+boost::shared_ptr<FactoredOutputNLM> AdditiveFactoredOutputNLM::load_from_file(const std::string& fn) {
+  //dummy variables -- should really just make a default constructor...
+  Dict d_, m_; 
+  WordIdMap map_; 
+  ModelData c_; 
+  c_.classes=2;
+  vector<int> cl_ = {0,2};
+
+  boost::shared_ptr<AdditiveFactoredOutputNLM> p(new AdditiveFactoredOutputNLM(c_, d_, false, cl_, m_, map_)); //put on heap
+
+  AdditiveFactoredOutputNLM& model = *p;
+
+  ifstream f(fn.c_str());
+  assert(f.good() && "Could not load model");
+  {
+    boost::archive::text_iarchive ar(f);
+    ar >> model;
+  }
+
+  cout << "Load success" << endl;
+  cout << "dictsize = " << model.labels() << endl;
+  cout << "w-elements = " << model.word_elements() << endl;
+  cout << "c-elements = " << model.ctx_elements() << endl;
+  cout << "additive-contexts = " << model.is_additive_contexts() << endl;
+  cout << "additive-words = " << model.is_additive_words() << endl;
+  cout << "classes = " << model.indexes.size() << endl;
+
+  return p;
 }
 

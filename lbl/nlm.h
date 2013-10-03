@@ -3,6 +3,7 @@
 
 #include <boost/shared_ptr.hpp>
 #include <boost/archive/text_oarchive.hpp>
+#include <boost/archive/text_iarchive.hpp>
 #include <iostream>
 #include <fstream>
 #include <memory>
@@ -160,6 +161,8 @@ public:
   }
   BOOST_SERIALIZATION_SPLIT_MEMBER();
 
+  virtual bool write_embeddings(const std::string& fn) const;
+
   virtual Real 
   score(const WordId w, const std::vector<WordId>& context, const NLMApproximateZ& z_approx) const {
     VectorReal prediction_vector = VectorReal::Zero(config.word_representation_size);
@@ -223,6 +226,7 @@ protected:
 
   void allocate_data(const ModelData& config);
   virtual void banner() const { std::cerr << " Created a NLM: "   << std::endl; }
+
   Dict m_labels;
   int m_data_size;
   Real* m_data;
@@ -272,8 +276,6 @@ public:
     FB -= FB*sigma;
     return NLM::l2_gradient_update(sigma) + F.array().square().sum() + FB.array().square().sum();
   }
-
-  void reclass(std::vector<WordId>& train, std::vector<WordId>& test);
 
   virtual Real
   log_prob(const WordId w, const std::vector<WordId>& context, bool cache=false) const {
@@ -336,6 +338,7 @@ public:
 
   template<class Archive>
   void load(Archive & ar, const unsigned int version) {
+    std::cerr << "FactoredOutputNLM::load\n";
     ar >> config;
     ar >> m_labels;
     ar >> m_diagonal;
@@ -399,6 +402,7 @@ protected:
   }
 
   virtual void banner() const { std::cerr << " Created a FactoredOutputNLM: "   << std::endl; }
+
 public:
   std::vector<int> word_to_class;
   std::vector<int> indexes;
@@ -556,10 +560,14 @@ public:
 
   bool is_additive_words() const { return m_additive_words; }
   bool is_additive_contexts() const { return m_additive_contexts; }
+  const Dict& feat_label_set() const { return m_feat_labels; }
 
   virtual int ctx_elements() const { return m_additive_contexts ? m_feat_labels.size() : context_types(); }
   virtual int word_elements() const { return m_additive_words ? m_feat_labels.size() : output_types(); }
 
+  virtual bool write_embeddings(const std::string& fn) const;
+
+  static boost::shared_ptr<FactoredOutputNLM> load_from_file(const std::string& fn);
 protected:
   virtual void get_prediction_vector(const std::vector<WordId>& context, VectorReal& prediction_vector) const {
     //std::cerr << "AdditiveFactoredOutputNLM::get_prediction_vector" << std::endl;

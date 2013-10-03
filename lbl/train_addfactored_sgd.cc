@@ -70,6 +70,7 @@ Real perplexity(const AdditiveFactoredOutputNLM& model, const Corpus& test_corpu
 void freq_bin_type(const std::string &corpus, int num_classes, std::vector<int>& classes, Dict& dict, VectorReal& class_bias);
 void classes_from_file(const std::string &class_file, vector<int>& classes, Dict& dict, VectorReal& class_bias);
 void read_additive_wordmap(const std::string &file, const Dict& dict, Dict& f_dict, WordIdMap& wordmap);
+void write_model(const string& filename, const AdditiveFactoredOutputNLM& model);
 
 int main(int argc, char **argv) {
   cout << "SGD training for output factored log-bilinear models with additive representations" << endl
@@ -128,7 +129,6 @@ int main(int argc, char **argv) {
         "file containing word to class mappings in the format <class> <word> <frequence>.")
     ("verbose,v", "print perplexity for each sentence (1) or input token (2) ")
     ("randomise", "visit the training tokens in random order")
-    ("reclass", "reallocate word classes after the first epoch.")
     ("diagonal-contexts", "Use diagonal context matrices (usually faster).")
     ;
   options_description config_options, cmdline_options;
@@ -349,7 +349,9 @@ void learn(const variables_map& vm, ModelData& config) {
 
     size_t minibatch_counter=0;
     size_t minibatch_size = vm["minibatch-size"].as<int>();
-    for (int iteration=0; iteration < vm["iterations"].as<int>(); ++iteration) {
+    bool working=true;
+    Real previous_pp = numeric_limits<Real>::max();
+    for (int iteration=0; iteration < vm["iterations"].as<int>() && working; ++iteration) {
       clock_t iteration_start=clock();
       #pragma omp master
       {
@@ -491,28 +493,32 @@ void learn(const variables_map& vm, ModelData& config) {
         if (vm.count("test-set")) {
           cerr << ", Test time: " << ((clock()-ppl_start) / (Real)CLOCKS_PER_SEC)
                << ", Test Perplexity = " << pp; 
+          working = (pp < previous_pp);
+          #pragma omp flush (working)
+          if (vm.count("model-out") && pp < previous_pp) //only store model if ppl improved
+            write_model(vm["model-out"].as<string>(), model);
         }
+        previous_pp = pp;
         cerr << " |" << endl << endl;
 
-        if (iteration >= 1 && vm.count("reclass")) {
-          model.reclass(training_corpus, test_corpus);
-          adaGradF = MatrixReal::Zero(model.F.rows(), model.F.cols());
-          adaGradFB = VectorReal::Zero(model.FB.size());
-          adaGrad = VectorReal::Zero(model.num_weights());
-        }
       }
     }
+    #pragma omp master
+    if (vm.count("test-set") && working) cerr << "Undone - iters up but ppl still going down" << endl;
     if (surface_gradient_data) { delete [] surface_gradient_data; surface_gradient_data=0; }
   }
 
-  if (vm.count("model-out")) {
-    cout << "Writing trained model to " << vm["model-out"].as<string>() << endl;
-    std::ofstream f(vm["model-out"].as<string>().c_str());
-    boost::archive::text_oarchive ar(f);
-    ar << model;
-  }
+  if (!vm.count("test-set") && vm.count("model-out")) //must store final model when no test-set given
+    write_model(vm["model-out"].as<string>(), model);
+  
 }
 
+void write_model(const string& filename, const AdditiveFactoredOutputNLM& model) {
+    cout << " Writing trained model to " << filename << endl;
+    std::ofstream f(filename.c_str());
+    boost::archive::text_oarchive ar(f);
+    ar << model;
+}
 
 void cache_data(int start, int end, const Corpus& training_corpus, const vector<size_t>& indices, TrainingInstances &result) {
   assert (start>=0 && start < end && end <= static_cast<int>(training_corpus.size()));

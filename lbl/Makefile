@@ -27,6 +27,9 @@ train_factored_sgd: train_factored_sgd.o $(local_objs)
 train_addfactored_sgd: train_addfactored_sgd.o $(local_objs)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 
+loader: loader.o nlm.o
+	$(CXX) -o $@ $^ $(LDFLAGS)
+
 train_clbl: train_clbl.o $(local_objs)
 	$(CXX) -o $@ $^ $(LDFLAGS)
 

@@ -123,7 +123,6 @@ int main(int argc, char **argv) {
         "file containing word to class mappings in the format <class> <word> <frequence>.")
     ("verbose,v", "print perplexity for each sentence (1) or input token (2) ")
     ("randomise", "visit the training tokens in random order")
-    ("reclass", "reallocate word classes after the first epoch.")
     ("diagonal-contexts", "Use diagonal context matrices (usually faster).")
     ;
   options_description config_options, cmdline_options;
@@ -388,12 +387,6 @@ void learn(const variables_map& vm, ModelData& config) {
         }
         cerr << " |" << endl << endl;
 
-        if (iteration >= 1 && vm.count("reclass")) {
-          model.reclass(training_corpus, test_corpus);
-          adaGradF = MatrixReal::Zero(model.F.rows(), model.F.cols());
-          adaGradFB = VectorReal::Zero(model.FB.size());
-          adaGrad = VectorReal::Zero(model.num_weights());
-        }
       }
     }
   }
