@@ -99,6 +99,7 @@ int main(int argc, char **argv) {
     ("additive-words", "use additive representations for output words")
     ("iterations", value<int>()->default_value(10), 
         "number of passes through the data")
+    ("keep-going", "Default behaviour is to stop training as soon as test perplexity goes up (if --test-set given). Pass this flag to adhere strictly to --iterations .")
     ("minibatch-size", value<int>()->default_value(100), 
         "number of tokens per minibatch")
     ("minibatch-info", "Report average vocabulary coverage per minibatch for first iteration")
@@ -252,6 +253,7 @@ void learn(const variables_map& vm, ModelData& config) {
     ar >> model;
   }
 
+  bool keep_going = vm.count("keep-going");
   vector<size_t> training_indices(training_corpus.size());
   model.unigram = VectorReal::Zero(model.labels());
   for (size_t i=0; i<training_indices.size(); i++) {
@@ -351,6 +353,7 @@ void learn(const variables_map& vm, ModelData& config) {
     size_t minibatch_size = vm["minibatch-size"].as<int>();
     bool working=true;
     Real previous_pp = numeric_limits<Real>::max();
+    Real best_pp = numeric_limits<Real>::max();
     for (int iteration=0; iteration < vm["iterations"].as<int>() && working; ++iteration) {
       clock_t iteration_start=clock();
       #pragma omp master
@@ -493,18 +496,19 @@ void learn(const variables_map& vm, ModelData& config) {
         if (vm.count("test-set")) {
           cerr << ", Test time: " << ((clock()-ppl_start) / (Real)CLOCKS_PER_SEC)
                << ", Test Perplexity = " << pp; 
-          working = (pp < previous_pp);
+          working = (keep_going || pp < previous_pp);
           #pragma omp flush (working)
-          if (vm.count("model-out") && pp < previous_pp) //only store model if ppl improved
+          if (vm.count("model-out") && (pp < best_pp)) //only store model if ppl improved or keep-going
             write_model(vm["model-out"].as<string>(), model);
         }
         previous_pp = pp;
+        if (pp < best_pp) best_pp = pp;
         cerr << " |" << endl << endl;
 
       }
     }
     #pragma omp master
-    if (vm.count("test-set") && working) cerr << "Undone - iters up but ppl still going down" << endl;
+    if (vm.count("test-set") && working && !keep_going) cerr << "Undone - iters up but ppl still going down" << endl;
     if (surface_gradient_data) { delete [] surface_gradient_data; surface_gradient_data=0; }
   }
 

@@ -13,21 +13,13 @@
 
 #include "corpus/corpus.h"
 #include "lbl/config.h"
+#include "lbl/typedefs.h"
 //#include "lbl/EigenMatrixSerialize.h"
 
 namespace oxlm {
 
-typedef float Real;
-typedef std::vector<Real> Reals;
-typedef Eigen::Matrix<Real, Eigen::Dynamic, Eigen::Dynamic> MatrixReal;
-typedef Eigen::Matrix<Real, Eigen::Dynamic, 1>              VectorReal;
-typedef Eigen::Array<Real, Eigen::Dynamic, 1>               ArrayReal;
 typedef boost::shared_ptr<MatrixReal>                       MatrixRealPtr;
 typedef boost::shared_ptr<VectorReal>                       VectorRealPtr;
-
-typedef Eigen::SparseMatrix<Real> SparseMatrixInt;
-typedef std::vector<WordId> WordIds;
-typedef std::vector<WordIds> WordIdMap;
 
 inline VectorReal softMax(const VectorReal& v) {
   Real max = v.maxCoeff();
@@ -510,6 +502,7 @@ public:
 
   template<class Archive>
   void load(Archive & ar, const unsigned int version) {
+    std::cerr << "AdditiveFactoredOutputNLM::load" << std::endl;
     ar >> config;
     ar >> m_labels;
     ar >> m_diagonal;

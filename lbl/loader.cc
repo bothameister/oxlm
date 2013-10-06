@@ -32,7 +32,7 @@
 #include "lbl/nlm.h"
 #include "lbl/log_add.h"
 #include "corpus/corpus.h"
-
+#include "lbl/vecoffset.h"
 
 // Namespaces
 using namespace boost;
@@ -68,8 +68,11 @@ int main(int argc, char **argv) {
         "model to load")
     ("embeddings,e", value<string>(), 
         "file to write embeddings (R) to. Line format wordtype followed by values. If model has additive words, the factor vectors are output to the e-file suffixed .factors")
+    ("analogy-task,a", value<string>(), 
+        "Use vectors from model to do the analogy-task given in this file. Each line should be 'a b c d', posing the question 'a is to b as c is to ?'")
     ("threads", value<int>()->default_value(1), 
         "number of worker threads.")
+    ("verbose,v", "echo task data and top 10 nearest answers")
     ;
   options_description config_options, cmdline_options;
 //  config_options.add(generic);
@@ -100,6 +103,11 @@ int main(int argc, char **argv) {
   if (vm.count("embeddings")) {
     bool ok=model->write_embeddings(vm["embeddings"].as<string>());
     assert(ok && "Failed to write embeddings to file");
+  }
+
+  if (vm.count("analogy-task")) {
+    //MatrixReal R = dynamic_cast<AdditiveFactoredOutputNLM&>(*model).Rp;
+    dotask(vm["analogy-task"].as<string>(), dynamic_cast<AdditiveFactoredOutputNLM&>(*model).Rp, model->label_set(), vm.count("verbose"));
   }
 
   return 0;
