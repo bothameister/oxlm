@@ -17,7 +17,7 @@
 #include "fdict.h"
 #include "sentence_metadata.h"
 
-#define kORDER 5
+//#define kORDER 5
 
 using namespace std;
 
@@ -76,20 +76,23 @@ struct SimplePair {
 class FF_LBLLM : public FeatureFunction {
  public:
   FF_LBLLM(const string& lm_file, const string& feat, const string& reffile) 
-    : lm(ModelData(), oxlm::Dict(), true), fid(FD::Convert(feat)), fid_oov(FD::Convert(feat+"_OOV"))
+    //: lm(ModelData(), oxlm::Dict(), true), fid(FD::Convert(feat)), fid_oov(FD::Convert(feat+"_OOV"))
+    : fid(FD::Convert(feat)), fid_oov(FD::Convert(feat+"_OOV"))
     //: lm(ModelData(), oxlm::Dict(), true, std::vector<int>()), fid(FD::Convert(feat)), fid_oov(FD::Convert(feat+"_OOV"))
   {
     {
       cerr << "Reading LM from " << lm_file << " ...\n";
-      //ifstream ifile(lm_file.c_str(), ios::in | ios::binary);
-      ifstream ifile(lm_file.c_str(), ios::in);
-      if (!ifile.good()) {
-        cerr << "Failed to open " << lm_file << " for reading\n";
-        abort();
-      }
-      boost::archive::text_iarchive ia(ifile);
-      ia >> lm;
-      dict = lm.label_set();
+//      //ifstream ifile(lm_file.c_str(), ios::in | ios::binary);
+//      ifstream ifile(lm_file.c_str(), ios::in);
+//      if (!ifile.good()) {
+//        cerr << "Failed to open " << lm_file << " for reading\n";
+//        abort();
+//      }
+//      boost::archive::text_iarchive ia(ifile);
+//      ia >> lm;
+      lm = oxlm::AdditiveFactoredOutputNLM::load_from_file(lm_file);
+      dict = lm->label_set();
+      kORDER = lm->config.ngram_order;
     }
     /*
     {
@@ -105,14 +108,14 @@ class FF_LBLLM : public FeatureFunction {
     */
     
     cerr << "Initializing map contents (map size=" << dict.max() << ")\n";
-    for (int i = 1; i < dict.max(); ++i)
+    for (int i = 0; i <= dict.max(); ++i)
       AddToWordMap(i);
     cerr << "Done.\n";
     ss_off = OrderToStateSize(kORDER)-1;  // offset of "state size" member
     FeatureFunction::SetStateSize(OrderToStateSize(kORDER));
     kSTART = dict.Convert("<s>");
     kSTOP = dict.Convert("</s>");
-    kUNKNOWN = dict.Convert("_UNK_");
+    kUNKNOWN = dict.Convert("<unk>");
     kNONE = -1;
     kSTAR = dict.Convert("<{STAR}>");
     last_id = 0;
@@ -139,8 +142,9 @@ class FF_LBLLM : public FeatureFunction {
     }
     */
     last_id = id;
-//    cerr << "\n  Cached contexts: " << lm.m_context_cache.size() << endl;
-    lm.clear_cache();
+    cerr << "\n  Cached contexts: ";
+    lm->cache_info();
+    lm->clear_cache();
   }
 
   inline void AddToWordMap(const WordID lbl_id) {
@@ -213,14 +217,14 @@ class FF_LBLLM : public FeatureFunction {
       xx.resize(kORDER-1, kUNKNOWN);
     
     reverse(xx.begin(),xx.end());
-//    cerr << "LEN=" << xx.size() << ", (";
-//    for (unsigned j = 0; j < xx.size(); ++j)
-//      cerr << dict.Convert(xx[j]) << " ";
-//    cerr << " | " << dict.Convert(word);
+    //cerr << "LEN=" << xx.size() << ", (";
+    //for (unsigned j = 0; j < xx.size(); ++j)
+    //  cerr << dict.Convert(xx[j]) << " ";
+    //cerr << " | " << dict.Convert(word);
     
-    double s = lm.log_prob(word, xx, false);
+    double s = lm->log_prob(word, xx, true);
 
-//    cerr << "), s = " << s << endl;
+    //cerr << "), s = " << s << endl;
 
     return s;
   }
@@ -365,10 +369,12 @@ class FF_LBLLM : public FeatureFunction {
   //oxlm::PYPLM<kORDER> lm; 
   //oxlm::NLM lm;
   //oxlm::NLMApproximateZ z_approx;
-  oxlm::FactoredOutputNLM lm;
+  //oxlm::FactoredOutputNLM lm;
+  boost::shared_ptr<oxlm::FactoredOutputNLM> lm;
   const int fid;
   const int fid_oov;
   vector<int> cdec2lbl; // cdec2lbl[TD::Convert("word")] returns the index in the lbl model
+  int kORDER;
 
   // stuff for online updating of LM
   vector<vector<WordID>> ref_sents;

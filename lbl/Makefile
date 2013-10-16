@@ -1,7 +1,9 @@
 LOCAL_LIBS=${HOME}/packages
 EIGEN=${LOCAL_LIBS}/eigen3
+BOOST_TAG=-mt
 CXXFLAGS = -g -std=c++0x -fPIC -shared -O3 -fopenmp -Wall -I.. -I${LOCAL_LIBS}/include -m64 -I${EIGEN}
-LDFLAGS = -g -std=c++0x -O3 -fopenmp -L${LOCAL_LIBS}/lib64 -L${LOCAL_LIBS}/lib -lboost_program_options -lboost_serialization -lgfortran
+LDFLAGS_LIBCDEC = -g -std=c++0x -O3 -fopenmp -L${LOCAL_LIBS}/lib64 -L${LOCAL_LIBS}/lib -lboost_serialization${BOOST_TAG} 
+LDFLAGS = -g -std=c++0x -O3 -fopenmp -L${LOCAL_LIBS}/lib64 -L${LOCAL_LIBS}/lib -lboost_program_options${BOOST_TAG} -lboost_serialization${BOOST_TAG} -lgfortran
 FFLAGS = -Wall -g -O3  
 CXX=g++
 FC=gfortran
@@ -51,13 +53,13 @@ train_z: train_z.o $(local_objs)
 # %.o: %.f
 #	$(FC) $(FFLAGS) -c $< -o $@
 #
-CDEC = ../../cdec
+CDEC = ../../cdec-github
 BOOST_INCLUDE=$(LOCAL_LIBS)/include
 cdec_ff_lbl.o: cdec_ff_lbl.cc
 	$(CXX) -shared -fPIC $(CXXFLAGS) -I$(CDEC)/utils -I$(CDEC)/mteval -I$(CDEC)/decoder $< -c
 
 libcdec_ff_lbl.so: cdec_ff_lbl.o nlm.o
-	$(CXX) -shared -L${CDEC}/decoder -lcdec -Wl,-soname,$@ -o $@ $^ $(LDFLAGS)
+	$(CXX) -shared -L${CDEC}/decoder -lcdec -Wl,-soname,$@ -o $@ $^ $(LDFLAGS_LIBCDEC)
 
 .PHONY: depend echo
 depend:

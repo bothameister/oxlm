@@ -283,6 +283,7 @@ public:
     std::pair<std::unordered_map<std::pair<int,Words>, Real>::iterator, bool> class_context_cache_result;
     if (cache) class_context_cache_result = m_context_class_cache.insert(make_pair(make_pair(c,context),0));
     if (cache && !class_context_cache_result.second) {
+      assert(class_context_cache_result.first->second != 0);
       word_log_prob  = R.row(w)*prediction_vector + B(w) - class_context_cache_result.first->second;
     }
     else {
@@ -296,6 +297,10 @@ public:
     return class_log_prob + word_log_prob;
   }
 
+  void cache_info() const {
+    std::cerr << "m_context_cache.size = " << m_context_cache.size() << "\t"
+              << "m_context_class_cache.size = " << m_context_class_cache.size() << std::endl;
+  }
   void clear_cache() { 
     m_context_cache.clear(); 
     m_context_cache.reserve(1000000);
@@ -451,6 +456,7 @@ public:
     std::pair<std::unordered_map<std::pair<int,Words>, Real>::iterator, bool> class_context_cache_result;
     if (cache) class_context_cache_result = m_context_class_cache.insert(make_pair(make_pair(c,context),0));
     if (cache && !class_context_cache_result.second) {
+      assert(class_context_cache_result.first->second != 0);
       word_log_prob  = Rp.row(w)*prediction_vector + B(w) - class_context_cache_result.first->second;
     }
     else {

@@ -368,19 +368,22 @@ boost::shared_ptr<FactoredOutputNLM> AdditiveFactoredOutputNLM::load_from_file(c
   AdditiveFactoredOutputNLM& model = *p;
 
   ifstream f(fn.c_str());
-  assert(f.good() && "Could not load model");
+  if (!f.good()) {
+    cerr << "Failed to open file " << fn << endl;
+    abort();
+  }
   {
     boost::archive::text_iarchive ar(f);
     ar >> model;
   }
 
-  cout << "Load success" << endl;
-  cout << "dictsize = " << model.labels() << endl;
-  cout << "w-elements = " << model.word_elements() << endl;
-  cout << "c-elements = " << model.ctx_elements() << endl;
-  cout << "additive-contexts = " << model.is_additive_contexts() << endl;
-  cout << "additive-words = " << model.is_additive_words() << endl;
-  cout << "classes = " << model.indexes.size() << endl;
+  cerr << "Load success" << endl;
+  cerr << "dictsize = " << model.labels() << endl;
+  cerr << "w-elements = " << model.word_elements() << endl;
+  cerr << "c-elements = " << model.ctx_elements() << endl;
+  cerr << "additive-contexts = " << model.is_additive_contexts() << endl;
+  cerr << "additive-words = " << model.is_additive_words() << endl;
+  cerr << "classes = " << model.indexes.size() << endl;
 
   return p;
 }
