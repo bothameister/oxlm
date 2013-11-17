@@ -45,6 +45,7 @@ typedef vector<WordId> Sentence;
 typedef vector<WordId> Corpus;
 
 void eval_ppl(FactoredOutputNLM& model, const string& test_set);
+void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set);
 Real perplexity(const FactoredOutputNLM& model, const Corpus& test_corpus, int stride=1);
 
 int main(int argc, char **argv) {
@@ -64,6 +65,8 @@ int main(int argc, char **argv) {
   generic.add_options()
     ("test-set", value<string>(), 
         "corpus of test sentences to be evaluated at each iteration")
+    ("test-set-ngrams", value<string>(), 
+        "list of ngrams to score - no sentence padding applied")
     ("model,m", value<string>(), 
         "model to load")
     ("embeddings,e", value<string>(), 
@@ -99,6 +102,8 @@ int main(int argc, char **argv) {
 
   if (vm.count("test-set"))
       eval_ppl(*model, vm["test-set"].as<string>());
+  if (vm.count("test-set-ngrams"))
+      eval_ppl_ngrams(*model, vm["test-set-ngrams"].as<string>());
 
   if (vm.count("embeddings")) {
     bool ok=model->write_embeddings(vm["embeddings"].as<string>());
@@ -113,9 +118,50 @@ int main(int argc, char **argv) {
   return 0;
 }
 
+void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set) {
+  clock_t timer=clock();
+  Dict& dict = model.label_set();
+  Corpus test_event;
+  ifstream test_in(test_set.c_str());
+  string line,token;
+  Real p=0.0;
+  int tokcount=0;
+  WordId unk = dict.Lookup("<unk>");
+  bool use_cache=false;
+  while (getline(test_in, line)) {
+    test_event.clear();
+    stringstream line_stream(line);
+    int i=0;
+    while (i++ < model.config.ngram_order && line_stream >> token) {
+      WordId w = dict.Convert(token, true);
+      if (w < 0) {
+        if (dict.valid(unk)) 
+          w = unk;
+        else {
+          cerr << token << " " << w << endl;
+          assert(!"Unknown word found in test data and training corpus does not include <unk>");
+        }
+      }
+      test_event.push_back(w);
+    }
+    ++tokcount;
+
+    assert((int)test_event.size() == model.config.ngram_order && "This scoring mode only handles full ngrams");
+    WordId w = test_event.back();
+    test_event.pop_back();
+    Real prob=model.log_prob(w, test_event, use_cache);
+    p += prob;
+    cout << line << " " << prob << endl;
+  }
+  test_in.close();
+  p = exp(-p/tokcount);
+  Real elapsed = (clock()-timer) / (Real)CLOCKS_PER_SEC;
+  cerr << " | " << elapsed << " seconds | Test Perplexity = " << p << endl;
+
+}
 void eval_ppl(FactoredOutputNLM& model, const string& test_set) {
   clock_t timer=clock();
-  cout << "Evaluating ppl on " << test_set << endl;
+  cerr << "Evaluating ppl on " << test_set << endl;
   Corpus test_corpus;
 
   Dict& dict = model.label_set();

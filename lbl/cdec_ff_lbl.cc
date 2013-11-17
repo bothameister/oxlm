@@ -145,6 +145,7 @@ class FF_LBLLM : public FeatureFunction {
     cerr << "\n  Cached contexts: ";
     lm->cache_info();
     lm->clear_cache();
+    lm->cache_info();
   }
 
   inline void AddToWordMap(const WordID lbl_id) {
@@ -205,6 +206,8 @@ class FF_LBLLM : public FeatureFunction {
   }
 
   inline double WordProb(WordID word, WordID const* context) const {
+    //cerr << "WordProb(): ";
+    //'word' and the content of 'context' are in LBL-idspace already
     vector<WordID> xx;
     for (int i=0; i<kORDER-1 && context && (*context != kNONE); ++i) { 
       xx.push_back(*context++); 
@@ -222,9 +225,10 @@ class FF_LBLLM : public FeatureFunction {
     //  cerr << dict.Convert(xx[j]) << " ";
     //cerr << " | " << dict.Convert(word);
     
-    double s = lm->log_prob(word, xx, true);
+    bool use_cache=true;
+    double s = lm->log_prob(word, xx, use_cache);
 
-    //cerr << "), s = " << s << endl;
+    //cerr << " " << s << endl;
 
     return s;
   }

@@ -450,7 +450,7 @@ public:
     int c = get_class(w);
     // log p(c | context) 
     Real class_log_prob = get_class_log_prob(c, context, prediction_vector, cache);
-
+    //std::cerr << "\tlogP(c=" << c << "|ctx) = " << class_log_prob << std::endl;
     // log p(w | c, context) 
     Real word_log_prob = 0;
     std::pair<std::unordered_map<std::pair<int,Words>, Real>::iterator, bool> class_context_cache_result;
@@ -466,6 +466,8 @@ public:
       word_log_prob = word_probs(w-c_start);
       if (cache) class_context_cache_result.first->second = w_log_z;
     }
+    //std::cerr << "\tlogP(w=" << m_labels.Convert(w) << "|ctx, class) = " << word_log_prob << std::endl;
+    //std::cerr << "\tlogProb = "  << class_log_prob + word_log_prob << std::endl;
 
     return class_log_prob + word_log_prob;
   }
@@ -549,7 +551,7 @@ public:
   BOOST_SERIALIZATION_SPLIT_MEMBER();
 
   void update_effective_representations() {
-    //std::cerr << "AdditiveFactoredOutputNLM::update_effective_representations()" << std::endl;
+    std::cerr << "AdditiveFactoredOutputNLM::update_effective_representations()" << std::endl;
     Rp = P_w * R;
     Qp = P_ctx * Q;
     //std::cerr << "Qp=" << std::endl << Qp << std::endl << std::endl;

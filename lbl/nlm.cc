@@ -318,6 +318,7 @@ void AdditiveFactoredOutputNLM::compile_additive_transformations() {
 }
 
 void AdditiveFactoredOutputNLM::compile_additive_transformation(SparseMatrixInt& P, bool nontrivial) {
+  std::cerr << "* compile_additive_transformation";
   if (nontrivial) {
     typedef Eigen::Triplet<int> Triplet;
     typedef std::vector<Triplet> Triplets;
@@ -332,9 +333,11 @@ void AdditiveFactoredOutputNLM::compile_additive_transformation(SparseMatrixInt&
     P.setFromTriplets(t.begin(), t.end());
   }
   else {
+    std::cerr << " -- trivial!";
     P.resize(m_labels.size(), m_labels.size()); 
     P.setIdentity();
   }
+  std::cerr << std::endl;
 }
 
 void AdditiveFactoredOutputNLM::init(bool init_weights) {
