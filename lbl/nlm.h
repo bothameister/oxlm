@@ -551,7 +551,7 @@ public:
   BOOST_SERIALIZATION_SPLIT_MEMBER();
 
   void update_effective_representations() {
-    std::cerr << "AdditiveFactoredOutputNLM::update_effective_representations()" << std::endl;
+    //std::cerr << "AdditiveFactoredOutputNLM::update_effective_representations()" << std::endl;
     Rp = P_w * R;
     Qp = P_ctx * Q;
     //std::cerr << "Qp=" << std::endl << Qp << std::endl << std::endl;
