@@ -96,26 +96,26 @@ void NLM::allocate_data(const ModelData& config) {
   m_data = new Real[m_data_size];
 }
 
-bool NLM::write_embeddings(const std::string& fn) const {
+bool NLM::write_embeddings(const std::string& fn, bool use_R) const {
   std::ofstream f(fn.c_str());
   if (!f.good()) return false;
   for (WordId w=0; w < (int)m_labels.size(); ++w) {
     f << m_labels.Convert(w);
     for (int i=0; i<config.word_representation_size; ++i)
-      f << " " << R(w,i);
+      f << " " << (use_R ? R(w,i) : Q(w,i));
     f << endl;
   }
   return true;
 }
 
-bool AdditiveFactoredOutputNLM::write_embeddings(const std::string& fn) const {
+bool AdditiveFactoredOutputNLM::write_embeddings(const std::string& fn, bool use_R) const {
   {
   std::ofstream f(fn.c_str());
   if (!f.good()) return false;
   for (WordId w=0; w < (int)m_labels.size(); ++w) {
     f << m_labels.Convert(w);
     for (int i=0; i<config.word_representation_size; ++i)
-      f << " " << Rp(w,i);
+      f << " " << (use_R ? Rp(w,i) : Qp(w,i));
     f << endl;
   }
   }
@@ -127,7 +127,7 @@ bool AdditiveFactoredOutputNLM::write_embeddings(const std::string& fn) const {
     for (WordId w=0; w < (int)m_feat_labels.size(); ++w) {
       f << m_feat_labels.Convert(w);
       for (int i=0; i<config.word_representation_size; ++i)
-        f << " " << R(w,i);
+        f << " " << (use_R ? R(w,i) : Q(w,i));
       f << endl;
     }
   }
@@ -357,6 +357,18 @@ void AdditiveFactoredOutputNLM::init(bool init_weights) {
   std::cerr << "  Context Feature vectors = "         << ctx_elements() << std::endl;
   std::cerr << "------" << std::endl;
 }
+
+// Used for a later experiment only.
+void AdditiveFactoredOutputNLM::toggle_surface_factor(WordId w, bool add) {
+  if (m_wordmap.at(w).size() > 1) {
+    WordId f0=m_wordmap.at(w).at(0);
+    if (add)
+      Rp.row(w) += R.row(f0);
+    else
+      Rp.row(w) -= R.row(f0);
+  }
+}
+
 
 boost::shared_ptr<FactoredOutputNLM> AdditiveFactoredOutputNLM::load_from_file(const std::string& fn) {
   //dummy variables -- should really just make a default constructor...

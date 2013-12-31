@@ -45,7 +45,7 @@ typedef vector<WordId> Sentence;
 typedef vector<WordId> Corpus;
 
 void eval_ppl(FactoredOutputNLM& model, const string& test_set);
-void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set);
+void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set, bool subtract_surface=false);
 Real perplexity(const FactoredOutputNLM& model, const Corpus& test_corpus, int stride=1);
 
 int main(int argc, char **argv) {
@@ -70,11 +70,14 @@ int main(int argc, char **argv) {
     ("model,m", value<string>(), 
         "model to load")
     ("embeddings,e", value<string>(), 
-        "file to write embeddings (R) to. Line format wordtype followed by values. If model has additive words, the factor vectors are output to the e-file suffixed .factors")
+        "file to write embeddings (R) to. Line format wordtype followed by values. If model has additive words, the factor vectors are output to the file suffixed .factors")
+    ("ctx-embeddings,E", value<string>(), 
+        "file to write embeddings (Q) to. Line format wordtype followed by values. If model has additive words, the factor vectors are output to the file suffixed .factors")
     ("analogy-task,a", value<string>(), 
         "Use vectors from model to do the analogy-task given in this file. Each line should be 'a b c d', posing the question 'a is to b as c is to ?'")
     ("threads", value<int>()->default_value(1), 
         "number of worker threads.")
+    ("subtract-surface", "Subtract the surface factor vector from word vector of output words.")
     ("verbose,v", "echo task data and top 10 nearest answers")
     ;
   options_description config_options, cmdline_options;
@@ -100,14 +103,22 @@ int main(int argc, char **argv) {
 
   boost::shared_ptr<FactoredOutputNLM> model = AdditiveFactoredOutputNLM::load_from_file(vm["model"].as<string>());
 
+  if (vm.count("subtract-surface")) 
+    cerr << "Subtracting surface factors from output representation before computing probability" << endl;
+  
+
   if (vm.count("test-set"))
       eval_ppl(*model, vm["test-set"].as<string>());
   if (vm.count("test-set-ngrams"))
-      eval_ppl_ngrams(*model, vm["test-set-ngrams"].as<string>());
+      eval_ppl_ngrams(*model, vm["test-set-ngrams"].as<string>(), vm.count("subtract-surface"));
 
   if (vm.count("embeddings")) {
     bool ok=model->write_embeddings(vm["embeddings"].as<string>());
-    assert(ok && "Failed to write embeddings to file");
+    assert(ok && "Failed to write output embeddings to file");
+  }
+  if (vm.count("ctx-embeddings")) {
+    bool ok=model->write_embeddings(vm["ctx-embeddings"].as<string>(), false);
+    assert(ok && "Failed to write context embeddings to file");
   }
 
   if (vm.count("analogy-task")) {
@@ -118,7 +129,7 @@ int main(int argc, char **argv) {
   return 0;
 }
 
-void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set) {
+void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set, bool subtract_surface) {
   clock_t timer=clock();
   Dict& dict = model.label_set();
   Corpus test_event;
@@ -128,6 +139,7 @@ void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set) {
   int tokcount=0;
   WordId unk = dict.Lookup("<unk>");
   bool use_cache=false;
+  AdditiveFactoredOutputNLM& model_iface = dynamic_cast<AdditiveFactoredOutputNLM&>(model);
   while (getline(test_in, line)) {
     test_event.clear();
     stringstream line_stream(line);
@@ -149,9 +161,14 @@ void eval_ppl_ngrams(FactoredOutputNLM& model, const string& test_set) {
     assert((int)test_event.size() == model.config.ngram_order && "This scoring mode only handles full ngrams");
     WordId w = test_event.back();
     test_event.pop_back();
+
+    if (subtract_surface) model_iface.toggle_surface_factor(w, false);
+
     Real prob=model.log_prob(w, test_event, use_cache);
     p += prob;
     cout << line << " " << prob << endl;
+
+    if (subtract_surface) model_iface.toggle_surface_factor(w, true);
   }
   test_in.close();
   p = exp(-p/tokcount);

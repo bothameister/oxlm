@@ -153,7 +153,7 @@ public:
   }
   BOOST_SERIALIZATION_SPLIT_MEMBER();
 
-  virtual bool write_embeddings(const std::string& fn) const;
+  virtual bool write_embeddings(const std::string& fn, bool use_R=true) const;
 
   virtual Real 
   score(const WordId w, const std::vector<WordId>& context, const NLMApproximateZ& z_approx) const {
@@ -559,6 +559,8 @@ public:
     //std::cerr << "Q=" << std::endl << Q << std::endl << std::endl;
   }
 
+  void toggle_surface_factor(WordId w, bool add);
+
   bool is_additive_words() const { return m_additive_words; }
   bool is_additive_contexts() const { return m_additive_contexts; }
   const Dict& feat_label_set() const { return m_feat_labels; }
@@ -566,7 +568,7 @@ public:
   virtual int ctx_elements() const { return m_additive_contexts ? m_feat_labels.size() : context_types(); }
   virtual int word_elements() const { return m_additive_words ? m_feat_labels.size() : output_types(); }
 
-  virtual bool write_embeddings(const std::string& fn) const;
+  virtual bool write_embeddings(const std::string& fn, bool use_R=true) const;
 
   static boost::shared_ptr<FactoredOutputNLM> load_from_file(const std::string& fn);
 protected:
